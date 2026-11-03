@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+myenv/
+
+# Large / downloadable artifacts
+wheels/
+data/
+models/py3dcal/
+*.tar.gz
+*.whl
+*.npz

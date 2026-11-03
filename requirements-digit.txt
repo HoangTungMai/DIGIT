@@ -1,0 +1,35 @@
+# Live DIGIT depth reconstruction (digit.py), Jetson AGX Orin, JetPack 5.1.2, Python 3.8 (myenv)
+#
+# torch/torchvision are NOT listed here: PyPI's aarch64 torch is CPU-only.
+# Install order:
+#   1. sudo apt install nvidia-jetpack libopenblas-dev libopenmpi-dev python3-dev build-essential cmake
+#   2. myenv/bin/python -m pip install wheels/torch-2.1.0a0+41361538.nv23.06-cp38-cp38-linux_aarch64.whl
+#      (NVIDIA CUDA build: developer.download.nvidia.com/compute/redist/jp/v512/pytorch/)
+#   3. build torchvision 0.16.1 from source against that torch (needs /usr/local/cuda; ~3 min with ninja):
+#        myenv/bin/python -m pip install ninja "setuptools<70" wheel
+#        curl -L https://github.com/pytorch/vision/archive/refs/tags/v0.16.1.tar.gz | tar xz && cd vision-0.16.1
+#        PATH=/usr/local/cuda/bin:$PWD/../myenv/bin:$PATH CUDA_HOME=/usr/local/cuda FORCE_CUDA=1 \
+#        TORCH_CUDA_ARCH_LIST=8.7 BUILD_VERSION=0.16.1 MAX_JOBS=10 \
+#          ../myenv/bin/python -m pip install --no-build-isolation --no-deps .
+#   4. myenv/bin/python -m pip install --timeout 120 --retries 10 -r requirements-digit.txt
+#   5. myenv/bin/python -m pip install --no-deps py3DCal==1.1.0
+#
+# py3DCal's metadata asks for torchvision>=0.23 and pillow>=11, which need
+# Python >= 3.9. Its code runs on 3.8 and only uses long-standing APIs of both
+# (transforms.ToTensor, Image.open), so it is installed with --no-deps against
+# the last 3.8-compatible versions below. digit.py imports a py3DCal internal
+# module path, so keep py3DCal pinned at 1.1.0.
+
+digit-interface>=0.2.1
+numpy>=1.20,<2              # NVIDIA torch 2.1 is built against numpy 1.x
+opencv-python>=4.5          # needs GUI support for cv2.imshow; not -headless
+
+# Imported by py3DCal's package __init__ even though digit.py does not use them
+matplotlib>=3.0,<3.8
+pandas>=2.0,<2.1
+pillow>=10,<11
+pyserial>=3.0
+requests>=2.0
+scikit-learn>=1.0,<1.4
+scipy>=1.0,<1.11
+tqdm>=4.0
