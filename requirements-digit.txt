@@ -13,6 +13,11 @@
 #          ../myenv/bin/python -m pip install --no-build-isolation --no-deps .
 #   4. myenv/bin/python -m pip install --timeout 120 --retries 10 -r requirements-digit.txt
 #   5. myenv/bin/python -m pip install --no-deps py3DCal==1.1.0
+#   6. optional, INT8 TensorRT engine (digit.py --engine, ~2x faster than fp16): JetPack ships
+#      TensorRT 8.5 for the system Python 3.8 (apt: python3-libnvinfer); expose it to myenv:
+#        ln -s /usr/lib/python3.8/dist-packages/tensorrt myenv/lib/python3.8/site-packages/
+#        myenv/bin/python build_touchnet_trt.py          # uses models/touchnet_int8_calib.json
+#        myenv/bin/python digit.py --engine models/touchnet_int8.engine
 #
 # py3DCal's metadata asks for torchvision>=0.23 and pillow>=11, which need
 # Python >= 3.9. Its code runs on 3.8 and only uses long-standing APIs of both

@@ -1,10 +1,15 @@
-"""TouchNet as a TensorRT engine: fp16, or INT8 for conv2-conv8 (explicit Q/DQ).
+"""TouchNet as a TensorRT engine: fp16, or INT8 for conv3-conv8 (explicit Q/DQ).
 
 Uses the same folded layers as touchnet_fp16.py (BatchNorm folded, conv1's coordinate
-channels as a fixed fp64 map). In int8 mode conv2-conv8 (~99% of the compute) take INT8
+channels as a fixed fp64 map). In int8 mode conv3-conv8 (~97% of the compute) take INT8
 inputs and weights: per-output-channel weight scales from the weights themselves, one
-activation scale per layer from calibration images. conv1 (3 input channels) and conv9
-(2 output channels) stay fp16.
+activation scale per layer (99.99th percentile on calibration images). conv1, conv2 and
+conv9 stay fp16.
+
+Measured on 300 held-out DIGIT probe images (RTX 2000 Ada), depth vs true fp32:
+  TouchNetFP16 (PyTorch) 16.1 ms  rmse 0.0003 px  peak 0.0008 px
+  TensorRT int8 conv3-8   7.2 ms  rmse 0.026 px   peak 0.072 px
+fp32 TouchNet itself is 0.34 px rmse / 1.22 px peak from the probe-sphere labels.
 
 Only TensorRT APIs that exist since 8.5 (JetPack 5.1.2) are used. Engines are specific to
 the GPU and TensorRT version: build them on the device that runs them (build_touchnet_trt.py).
@@ -20,7 +25,10 @@ import torch.nn.functional as F
 
 from touchnet_fp16 import LAYERS, fold_layers
 
-INT8_LAYERS = range(1, LAYERS - 1)  # 0-based: conv2..conv8
+INT8_LAYERS = range(1, LAYERS - 1)  # 0-based: conv2..conv8 (calibrated)
+# conv2 stays fp16: its input is a small contact signal on top of large coordinate-driven
+# activations, and INT8 on it alone triples the depth error for ~0 speed (2.5% of compute).
+DEFAULT_INT8_CONVS = (3, 4, 5, 6, 7, 8)
 
 
 def prepare(frames):
@@ -59,14 +67,20 @@ def calibrate(state_dict, pairs, color_order="bgr", percentile=99.99, samples=20
 
 
 def build_engine(state_dict, height, width, precision="int8", act_amax=None, color_order="bgr",
-                 workspace_mb=1024):
-    """Return a serialized TensorRT engine (bytes). act_amax (from calibrate) is needed for int8."""
+                 int8_convs=DEFAULT_INT8_CONVS, workspace_mb=1024):
+    """Return a serialized TensorRT engine (bytes).
+
+    int8 needs act_amax (from calibrate). int8_convs: 1-based conv indices run in INT8
+    (subset of 2..8); the others stay fp16.
+    """
     import tensorrt as trt
 
     if precision not in ("fp16", "int8"):
         raise ValueError("precision must be fp16 or int8")
     if precision == "int8" and (act_amax is None or len(act_amax) != len(INT8_LAYERS)):
         raise ValueError(f"int8 needs {len(INT8_LAYERS)} activation amax values (calibrate())")
+    if not set(int8_convs) <= {i + 1 for i in INT8_LAYERS}:
+        raise ValueError("int8_convs must be a subset of 2..8")
     logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(logger)
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
@@ -96,7 +110,7 @@ def build_engine(state_dict, height, width, precision="int8", act_amax=None, col
         if b is not None:
             keep.append(np.ascontiguousarray(b.float().numpy()))
             bias = trt.Weights(keep[-1])
-        if precision == "int8" and i in INT8_LAYERS:
+        if precision == "int8" and i + 1 in int8_convs:
             x = qdq(x, act_amax[i - 1])
             conv = network.add_convolution_nd(x, out_channels, (k, k), trt.Weights(), bias)
             conv.set_input(1, qdq(const(w), np.abs(w).reshape(out_channels, -1).max(1), axis=0))

@@ -42,7 +42,7 @@ def prepare_model_image(frame, reference, color_order="bgr"):
 class DigitDepthModel:
     """TouchNet inference using the DIGIT calibration recording convention."""
 
-    def __init__(self, root, device="cpu", weights=None, color_order="bgr", half=False):
+    def __init__(self, root, device="cpu", weights=None, color_order="bgr", half=False, engine=None):
         import torch
         import py3DCal as p3d
         from py3DCal.model_training.lib.add_coordinate_embeddings import (
@@ -59,6 +59,14 @@ class DigitDepthModel:
         self.half = half and device == "cuda"
         if device == "cuda":
             torch.backends.cudnn.benchmark = True  # frame size never changes
+        self.fast = None  # TouchNetFP16 (built on the first frame: needs its size) or TouchNetTRT
+        if engine is not None:
+            # TensorRT engine from build_touchnet_trt.py (INT8 by default); its weights and
+            # color order are baked in at build time.
+            from touchnet_trt import TouchNetTRT
+            self.fast = TouchNetTRT(engine, device)
+            self.model = None
+            return
         if weights is None:
             root.mkdir(parents=True, exist_ok=True)
             self.model = p3d.models.TouchNet(
@@ -68,10 +76,9 @@ class DigitDepthModel:
             self.model = p3d.models.TouchNet()
             self.model.load_weights(weights)
         self.model.to(device).eval()
-        self.fast = None  # TouchNetFP16, built on the first frame (needs the frame size)
 
     def predict(self, frame, reference):
-        if self.half:
+        if self.fast is not None or self.half:
             if self.fast is None:
                 from touchnet_fp16 import TouchNetFP16
                 self.fast = TouchNetFP16(self.model.state_dict(), *frame.shape[:2],
@@ -199,6 +206,8 @@ def main():
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
     parser.add_argument("--fp32", action="store_true",
                         help="Disable fp16 inference on CUDA (about 2x slower)")
+    parser.add_argument("--engine", type=Path,
+                        help="TensorRT engine from build_touchnet_trt.py (INT8: ~2x faster than fp16)")
     parser.add_argument("--manual", action="store_true",
                         help="Start frozen: render only on R instead of realtime")
     parser.add_argument("--threads", type=int, default=min(4, os.cpu_count() or 1))
@@ -225,6 +234,11 @@ def main():
         parser.error("--output must be a new .npz file")
     if args.weights and not args.weights.is_file():
         parser.error(f"Weights file does not exist: {args.weights}")
+    if args.engine and not args.engine.is_file():
+        parser.error(f"Engine file does not exist: {args.engine} (build it with build_touchnet_trt.py)")
+    if args.engine and (args.weights or args.fp32 or args.device not in ("auto", "cuda")):
+        parser.error("--engine already holds the weights and precision and runs on CUDA; "
+                     "drop --weights/--fp32/--device")
     try:
         from digit_interface import DigitHandler
     except ImportError as exc:
@@ -254,9 +268,11 @@ def main():
     device = args.device
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading py3DCal TouchNet for DIGIT {serial} on {device}...", flush=True)
+    if args.engine and device != "cuda":
+        parser.error("--engine needs CUDA")
+    print(f"Loading {args.engine or 'py3DCal TouchNet'} for DIGIT {serial} on {device}...", flush=True)
     model = DigitDepthModel(args.model_root, device, args.weights, args.model_color_order,
-                            half=not args.fp32)
+                            half=not args.fp32, engine=args.engine)
     sensor = p3d.DIGIT(serial)
     executor = ThreadPoolExecutor(max_workers=1)
     renderer = DepthRenderer(model, executor)

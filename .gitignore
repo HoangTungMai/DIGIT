@@ -10,3 +10,6 @@ models/py3dcal/
 *.tar.gz
 *.whl
 *.npz
+
+# TensorRT engines are specific to the GPU and TensorRT version (build_touchnet_trt.py)
+*.engine

@@ -65,7 +65,7 @@ class TouchNetFP16(torch.nn.Module):
     color_order="rgb" flips channels for weights trained on RGB images.
     """
 
-    def __init__(self, state_dict, height=240, width=320, scale=1, color_order="bgr",
+    def __init__(self, state_dict, height=320, width=240, scale=1, color_order="bgr",
                  device="cuda", cuda_graph=True):
         super().__init__()
         self.scale = scale
