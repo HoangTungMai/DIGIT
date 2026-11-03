@@ -54,7 +54,8 @@ class DigitDepthModel:
         self.add_coordinate_embeddings = add_coordinate_embeddings
         self.device = device
         self.color_order = color_order
-        # fp16 halves TouchNet time on Jetson Orin; depth differs by ~0.01 px.
+        # fp16 (TouchNetFP16: folded BN, CUDA graph) is ~2.5x faster than fp32 and its depth
+        # differs from true fp32 by ~0.001 px; see touchnet_fp16.py.
         self.half = half and device == "cuda"
         if device == "cuda":
             torch.backends.cudnn.benchmark = True  # frame size never changes
@@ -67,8 +68,17 @@ class DigitDepthModel:
             self.model = p3d.models.TouchNet()
             self.model.load_weights(weights)
         self.model.to(device).eval()
+        self.fast = None  # TouchNetFP16, built on the first frame (needs the frame size)
 
     def predict(self, frame, reference):
+        if self.half:
+            if self.fast is None:
+                from touchnet_fp16 import TouchNetFP16
+                self.fast = TouchNetFP16(self.model.state_dict(), *frame.shape[:2],
+                                         color_order=self.color_order, device=self.device)
+            gradients = self.fast.predict(frame, reference)
+            depth = self.p3d.fast_poisson(gradients[0], gradients[1])
+            return np.clip(-depth, 0, None).astype(np.float32)
         image = self.torch.from_numpy(prepare_model_image(frame, reference, self.color_order))
         image = self.add_coordinate_embeddings(image).unsqueeze(0).to(self.device)
         with self.torch.inference_mode(), self.torch.autocast(
