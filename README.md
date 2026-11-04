@@ -20,6 +20,11 @@ Depth is in **model pixel units**, not millimetres.
 | `fast_touchnet.py` | FastTouchNet: TouchNet with conv4–conv6 at reduced resolution |
 | `train_fast_touchnet.py` | Fine-tunes FastTouchNet from TouchNet (distillation + probe-sphere labels) |
 | `models/fast_touchnet_s2.pth` | FastTouchNet /2 checkpoint, fine-tuned on ~1.1k probe images |
+| `unet.py` | U-Net alternative to TouchNet: same 5-channel input and 2 gradient outputs, ~20× less compute |
+| `make_fots_data.py` | Renders a labelled dataset of *our* DIGIT with [FOTS](https://github.com/Rancho-zhao/FOTS) (any shape, exact depth) |
+| `train_sim.py` | Trains the U-Net or TouchNet on that dataset; scores unseen shapes and real sphere frames |
+| `train_unet.py` | U-Net experiments on py3DCal's sphere data (labels, composites, distillation) |
+| `models/unet_b32_fots.pth` | U-Net (base 32) trained on 20k FOTS frames of our DIGIT |
 | `requirements-digit.txt` | Jetson install steps (header) and pip requirements |
 
 ## Installation
@@ -156,3 +161,60 @@ fp16, 8.3 ms INT8 (~4.9× faster than `--fp32`). Ratios on the Orin will differ:
 Lower precisions are not an option on the Orin: its Ampere GPU has no FP8 tensor cores
 (Ada/Hopper and later only), FP4 is Blackwell-only, and int16 convolution is not supported
 by cuDNN at all.
+
+## U-Net trained on FOTS (`unet.py`, `make_fots_data.py`, `train_sim.py`)
+
+TouchNet keeps all 9 convolutions at full resolution (~298 GMAC per frame). `unet.py` is a
+4-level U-Net (base 32, 7.8M parameters, ~14 GMAC) with the same input and output, so the
+same `fast_poisson` integration applies. It is ~9× faster in fp16 (1.7 ms vs 16 ms on the
+RTX 2000 Ada).
+
+**Why not py3DCal's data.** Every py3DCal label is a 2 mm probe sphere. Trained on those
+labels, the U-Net, which sees almost the whole frame, learns to draw spheres. It scores
+better than TouchNet on held-out probes but fails on other shapes: the pill in
+`test_objects` comes out as two spheres. Adding summed multi-probe frames with summed labels
+(`train_unet.py --composite-labels`) does not fix it. TouchNet avoids the shortcut because
+its receptive field is only ~35 px. Distilling TouchNet does fix it
+(`train_unet.py --distill-weight 1 --label-weight 0.5`), but then the U-Net only copies
+TouchNet, on a DIGIT that is not ours.
+
+**FOTS dataset.** [FOTS](https://github.com/Rancho-zhao/FOTS) renders a DIGIT image from a
+gel height map, using a normal-to-colour MLP and shadows calibrated on our sensor (4.7 mm
+ball, 18.43 px/mm). `make_fots_data.py` presses the 21 STL indenters from
+`FOTS/assets/daniel` into the gel, 1–2 per frame, each with a random x/y/z scale, yaw,
+offset and 0.2–2.4 mm press. It adds the measured sensor noise and JPEG compression, and
+saves the exact depth label. Torus, pacman, dots and wave1 are held out as unseen shapes.
+`train_sim.py` also adds random reference drift (colour cast, column stripes), which real
+frames show against a stale reference.
+
+```bash
+../FOTS/.venv/bin/python make_fots_data.py --train 20000 --test 2000   # ~4 min, 7.3 GB in data/fots_sim
+python train_sim.py --arch unet --epochs 15 --output models/unet_b32_fots.pth   # ~30 min
+python train_sim.py --arch touchnet --init pretrained --batch 8 --lr 2e-4 --epochs 8   # ~70 min
+```
+
+Depth RMSE / peak error in px. "Unseen shapes" is 500 FOTS frames of the 4 held-out meshes.
+"Real spheres" is the 8 real frames of our DIGIT from FOTS's calibration set
+(`FOTS/outputs/digit_calibration/dataset.npz`) that FOTS's colour model was not fitted on;
+their peak depth is ~38 px:
+
+| Model | Training frames | Unseen shapes (sim) | Real spheres |
+|---|---|---|---|
+| **U-Net, FOTS (`models/unet_b32_fots.pth`)** | 240k | **2.28 / 2.6** | **2.43 / 5.6** |
+| U-Net, FOTS, at epoch 4 | 64k | 2.51 / 3.3 | 2.61 / 9.6 |
+| TouchNet fine-tuned on FOTS from py3DCal's weights | 64k | 3.68 / 6.7 | 4.68 / 23.0 |
+| TouchNet, py3DCal weights (another DIGIT) | — | 5.64 / 8.7 | 2.71 / 6.8 |
+
+TouchNet costs ~58 ms per training frame vs ~7 ms for the U-Net, so it got fewer frames.
+At the same 64k frames the U-Net is still clearly ahead, and it is ahead at every
+gradient-steepness level. Both reproduce the unseen shapes. TouchNet's errors are mostly in
+depth magnitude: on the real spheres it predicts about half the depth.
+
+Limitations: the unseen shapes are simulated, and the only real frames with ground truth are
+spheres. FOTS models no gel mechanics, and its shadow fit is rough. Pressing a few printed
+indenters of known shape on the sensor is the next real test.
+
+Checkpoints hold `{"arch", "base", "state_dict", "colour_order"}`. Load them with
+`UNet(c["base"]).load_state_dict(c["state_dict"])`. The input is `(frame - reference) / 255`
+in OpenCV BGR order plus 1-based x/y pixel coordinates, as for TouchNet. `digit.py` does not
+load the U-Net yet.
