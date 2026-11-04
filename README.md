@@ -25,6 +25,8 @@ Depth is in **model pixel units**, not millimetres.
 | `train_sim.py` | Trains the U-Net or TouchNet on that dataset; scores unseen shapes and real sphere frames |
 | `train_unet.py` | U-Net experiments on py3DCal's sphere data (labels, composites, distillation) |
 | `models/unet_b32_fots.pth` | U-Net (base 32) trained on 20k FOTS frames of our DIGIT |
+| `models/unet_b32_distill.pth` | U-Net (base 32) distilled from TouchNet on py3DCal's DIGIT data |
+| `capture_real.py` | Records a reference plus labelled raw frames from a DIGIT for offline model comparison |
 | `requirements-digit.txt` | Jetson install steps (header) and pip requirements |
 
 ## Installation
@@ -177,6 +179,14 @@ better than TouchNet on held-out probes but fails on other shapes: the pill in
 its receptive field is only ~35 px. Distilling TouchNet does fix it
 (`train_unet.py --distill-weight 1 --label-weight 0.5`), but then the U-Net only copies
 TouchNet, on a DIGIT that is not ours.
+
+`models/unet_b32_distill.pth` is that distilled model: 15 epochs, half the inputs summed
+multi-probe frames with TouchNet as the only target. On py3DCal's data it is 0.27 / 1.22 px
+RMSE / peak error from the held-out probe labels (TouchNet: 0.49 / 2.13). On the test
+objects it is within 0.45–0.67 px of TouchNet, with the same shapes. On the real sphere
+frames of our DIGIT it does worse than its teacher (2.90 / 9.4 px vs 2.71 / 6.8 px), so
+under a sensor change the U-Net degrades more than TouchNet. The checkpoint holds
+`{"base", "state_dict"}`, with the same input convention as below.
 
 **FOTS dataset.** [FOTS](https://github.com/Rancho-zhao/FOTS) renders a DIGIT image from a
 gel height map, using a normal-to-colour MLP and shadows calibrated on our sensor (4.7 mm
